@@ -439,7 +439,9 @@ class MambaCache(_BaseCache):
 
 
 class Mamba2Cache:
-    def __init__(self, args, batch_size: int = 1):
+    def __init__(
+        self, args, batch_size: int = 1
+    ):
         self.conv_kernel_size = args.conv_kernel
         self.n_groups = args.n_groups
         self.state_size = args.state_size
@@ -459,6 +461,7 @@ class Mamba2Cache:
             self.head_dim,
             self.state_size)
         )
+        self.offset = 0
 
     def update_conv_state(
         self, layer_idx: int, new_conv_state: mx.array, cache_init: bool = False
