@@ -438,80 +438,44 @@ class MambaCache(_BaseCache):
         self.cache = v
 
 
-class Mamba2Cache(_BaseCache):
-    def __init__(self, config):
-        self.conv_kernel_size = config.conv_kernel
-        self.n_groups = config.n_groups
-        self.state_size = config.state_size
-        self.num_heads = config.num_heads
-        self.head_dim = config.head_dim
-        self.intermediate_size = int(config.expand * config.hidden_size)
-        
-        # Initialize the cache without batch size dimension
-        conv_states = mx.zeros(
-            (config.num_hidden_layers,
+class Mamba2Cache:
+    def __init__(self, args, batch_size: int = 1):
+        self.conv_kernel_size = args.conv_kernel
+        self.n_groups = args.n_groups
+        self.state_size = args.state_size
+        self.num_heads = args.num_heads
+        self.head_dim = args.head_dim
+        self.intermediate_size = int(args.expand * args.hidden_size)
+        self.conv_states = mx.zeros(
+            (args.num_hidden_layers,
+            batch_size,
             self.intermediate_size + 2 * self.n_groups * self.state_size,
             self.conv_kernel_size)
         )
-        
-        ssm_states = mx.zeros(
-            (config.num_hidden_layers,
+        self.ssm_states = mx.zeros(
+            (args.num_hidden_layers,
+            batch_size,
             self.num_heads,
             self.head_dim,
             self.state_size)
         )
-        
-        self.cache = [conv_states, ssm_states]
 
-    def __setitem__(self, idx, value):
-        self.cache[idx] = value
-
-    def __getitem__(self, idx):
-        return self.cache[idx]
-
-    @property
-    def state(self):
-        return self.cache
-
-    @state.setter
-    def state(self, v):
-        self.cache = v
-    
-    @property
-    def conv_states(self):
-        return self.cache[0]
-    
-    @conv_states.setter
-    def conv_states(self, value):
-        self.cache[0] = value
-    
-    @property
-    def ssm_states(self):
-        return self.cache[1]
-    
-    @ssm_states.setter
-    def ssm_states(self, value):
-        self.cache[1] = value
-
-    def update_conv_state(self, layer_idx, new_conv_state, cache_init=False):
+    def update_conv_state(
+        self, layer_idx: int, new_conv_state: mx.array, cache_init: bool = False
+    ) -> mx.array:
         if cache_init:
-            # For initialization, replace the entire layer's state
             self.conv_states[layer_idx] = new_conv_state
         else:
-            # Roll the states and update
             rolled = mx.roll(self.conv_states[layer_idx], shift=-1, axis=-1)
-            # Update the last position with flattened new state
-            rolled[:, -1] = new_conv_state[0, :]
+            rolled[:, :, -1] = new_conv_state[:, 0, :]
             self.conv_states[layer_idx] = rolled
         
         return self.conv_states[layer_idx]
 
-    def update_ssm_state(self, layer_idx, new_ssm_state):
-        # Update the layer with the new state
+    def update_ssm_state(self, layer_idx: int, new_ssm_state: mx.array):
         self.ssm_states[layer_idx] = new_ssm_state
         return self.ssm_states[layer_idx]
 
     def reset(self):
-        # Zero out the arrays
         self.conv_states = mx.zeros_like(self.conv_states)
         self.ssm_states = mx.zeros_like(self.ssm_states)
