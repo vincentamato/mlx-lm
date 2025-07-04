@@ -1,29 +1,52 @@
 # Copyright © 2023-2024 Apple Inc.
 
 import argparse
-import glob
-import shutil
 from pathlib import Path
 from typing import Callable, Optional, Union
 
 import mlx.core as mx
 import mlx.nn as nn
-from mlx.utils import tree_flatten
+from mlx.utils import tree_map_with_path
 
 from .utils import (
     dequantize_model,
     fetch_from_hub,
     get_model_path,
     quantize_model,
-    save_config,
-    save_weights,
+    save,
     upload_to_hub,
 )
 
 
 def mixed_quant_predicate_builder(
-    low_bits: int = 4, high_bits: int = 4, group_size: int = 64
+    recipe: str, model: nn.Module
 ) -> Callable[[str, nn.Module, dict], Union[bool, dict]]:
+
+    high_bits = 6
+    group_size = 64
+
+    if recipe == "mixed_2_6":
+        low_bits = 2
+    elif recipe == "mixed_3_4":
+        low_bits = 3
+        high_bits = 4
+    elif recipe == "mixed_3_6":
+        low_bits = 3
+    elif recipe == "mixed_4_6":
+        low_bits = 4
+    else:
+        raise ValueError("Invalid quant recipe {recipe}")
+
+    down_keys = [k for k, _ in model.named_modules() if "down_proj" in k]
+    if len(down_keys) == 0:
+        raise ValueError("Model does not have expected keys for mixed quant.")
+
+    # Look for the layer index location in the path:
+    for layer_location, k in enumerate(down_keys[0].split(".")):
+        if k.isdigit():
+            break
+    num_layers = len(model.layers)
+
     def mixed_quant_predicate(
         path: str,
         module: nn.Module,
@@ -36,10 +59,14 @@ def mixed_quant_predicate_builder(
 
         if not hasattr(module, "to_quantized"):
             return False
+        if module.weight.shape[1] % group_size != 0:
+            return False
 
-        index = int(path.split(".")[2]) if len(path.split(".")) > 2 else 0
-
-        num_layers = config["num_hidden_layers"]
+        index = (
+            int(path.split(".")[layer_location])
+            if len(path.split(".")) > layer_location
+            else 0
+        )
         use_more_bits = (
             index < num_layers // 8
             or index >= 7 * num_layers // 8
@@ -57,19 +84,9 @@ def mixed_quant_predicate_builder(
     return mixed_quant_predicate
 
 
-QUANT_RECIPES = {
-    "mixed_2_6": mixed_quant_predicate_builder(low_bits=3, high_bits=6),
-    "mixed_3_6": mixed_quant_predicate_builder(low_bits=2, high_bits=6),
-}
+QUANT_RECIPES = ["mixed_2_6", "mixed_3_4", "mixed_3_6", "mixed_4_6"]
 
-
-def quant_args(arg):
-    if arg not in QUANT_RECIPES:
-        raise argparse.ArgumentTypeError(
-            f"Invalid q-recipe {arg!r}. Choose from: {list(QUANT_RECIPES.keys())}"
-        )
-    else:
-        return QUANT_RECIPES[arg]
+MODEL_CONVERSION_DTYPES = ["float16", "bfloat16", "float32"]
 
 
 def convert(
@@ -78,12 +95,12 @@ def convert(
     quantize: bool = False,
     q_group_size: int = 64,
     q_bits: int = 4,
-    dtype: str = "float16",
+    dtype: Optional[str] = None,
     upload_repo: str = None,
     revision: Optional[str] = None,
     dequantize: bool = False,
     quant_predicate: Optional[
-        Callable[[str, nn.Module, dict], Union[bool, dict]]
+        Union[Callable[[str, nn.Module, dict], Union[bool, dict]], str]
     ] = None,
 ):
     # Check the save path is empty
@@ -97,41 +114,61 @@ def convert(
         )
 
     print("[INFO] Loading")
-    model_path = get_model_path(hf_path, revision=revision)
+    model_path, hf_path = get_model_path(hf_path, revision=revision)
     model, config, tokenizer = fetch_from_hub(model_path, lazy=True)
 
-    weights = dict(tree_flatten(model.parameters()))
-    dtype = getattr(mx, dtype)
-    weights = {k: v.astype(dtype) for k, v in weights.items()}
+    def base_quant_predicate(path, module, config):
+        if not hasattr(module, "to_quantized"):
+            return False
+        if module.weight.shape[1] % q_group_size != 0:
+            return False
+        return True
+
+    if isinstance(quant_predicate, str):
+        quant_predicate = mixed_quant_predicate_builder(quant_predicate, model)
+    quant_predicate = quant_predicate or base_quant_predicate
+
+    if dtype is None:
+        dtype = config.get("torch_dtype", None)
+    if dtype in MODEL_CONVERSION_DTYPES:
+        print("[INFO] Using dtype:", dtype)
+        dtype = getattr(mx, dtype)
+        cast_predicate = getattr(model, "cast_predicate", lambda _: True)
+
+        def set_dtype(k, v):
+            if cast_predicate(k) and mx.issubdtype(v.dtype, mx.floating):
+                return v.astype(dtype)
+            else:
+                return v
+
+        model.update(tree_map_with_path(set_dtype, model.parameters()))
 
     if quantize and dequantize:
         raise ValueError("Choose either quantize or dequantize, not both.")
 
     if quantize:
         print("[INFO] Quantizing")
-        model.load_weights(list(weights.items()))
-        weights, config = quantize_model(
+        model, config = quantize_model(
             model, config, q_group_size, q_bits, quant_predicate=quant_predicate
         )
 
     if dequantize:
         print("[INFO] Dequantizing")
+        config.pop("quantization", None)
+        config.pop("quantization_config", None)
         model = dequantize_model(model)
-        weights = dict(tree_flatten(model.parameters()))
 
-    del model
-    save_weights(mlx_path, weights, donate_weights=True)
-
-    py_files = glob.glob(str(model_path / "*.py"))
-    for file in py_files:
-        shutil.copy(file, mlx_path)
-
-    tokenizer.save_pretrained(mlx_path)
-
-    save_config(config, config_path=mlx_path / "config.json")
+    save(
+        mlx_path,
+        model_path,
+        model,
+        tokenizer,
+        config,
+        hf_repo=hf_path,
+    )
 
     if upload_repo is not None:
-        upload_to_hub(mlx_path, upload_repo, hf_path)
+        upload_to_hub(mlx_path, upload_repo)
 
 
 def configure_parser() -> argparse.ArgumentParser:
@@ -160,16 +197,17 @@ def configure_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--quant-predicate",
-        help=f"Mixed-bit quantization recipe. Choices: {list(QUANT_RECIPES.keys())}",
-        type=quant_args,
+        help=f"Mixed-bit quantization recipe.",
+        choices=QUANT_RECIPES,
+        type=str,
         required=False,
     )
     parser.add_argument(
         "--dtype",
-        help="Type to save the non-quantized parameters.",
+        help="Type to save the non-quantized parameters. Defaults to config.json's `torch_dtype` or the current model weights dtype.",
         type=str,
-        choices=["float16", "bfloat16", "float32"],
-        default="float16",
+        choices=MODEL_CONVERSION_DTYPES,
+        default=None,
     )
     parser.add_argument(
         "--upload-repo",

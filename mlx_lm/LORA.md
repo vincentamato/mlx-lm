@@ -76,6 +76,11 @@ You can specify the output location with `--adapter-path`.
 You can resume fine-tuning with an existing adapter with
 `--resume-adapter-file <path_to_adapters.safetensors>`.
 
+#### Logging
+
+You can log training metrics to Weights & Biases by passing a project name with
+the `--wandb` flag. Make sure to install wandb with `pip install wandb`.
+
 #### Prompt Masking
 
 The default training computes a loss for every token in the sample. You can
@@ -291,7 +296,7 @@ example:
 
 ```yaml
 hf_dataset:
-  name: "billsum"
+  path: "billsum"
   prompt_feature: "text"
   completion_feature: "summary"
 ```
@@ -308,12 +313,12 @@ with the same structure as above. For example:
 
 ```yaml
 hf_dataset:
-  - name: "Open-Orca/OpenOrca"
+  - path: "Open-Orca/OpenOrca"
     train_split: "train[:90%]"
     valid_split: "train[-10%:]"
     prompt_feature: "question"
     completion_feature: "response"
-  - name: "trl-lib/ultrafeedback_binarized"
+  - path: "trl-lib/ultrafeedback_binarized"
     train_split: "train[:90%]"
     valid_split: "train[-10%:]"
     chat_feature: "chosen"
@@ -379,7 +384,7 @@ mlx_lm.lora \
     --train \
     --batch-size 1 \
     --num-layers 4 \
-    --data wikisql
+    --data  mlx-community/wikisql
 ```
 
 The above command on an M1 Max with 32 GB runs at about 250

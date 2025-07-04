@@ -1,8 +1,9 @@
 import json
 from functools import partial
+from json import JSONDecodeError
 from typing import List
 
-from transformers import AutoTokenizer
+from transformers import AutoTokenizer, PreTrainedTokenizerFast
 
 
 class StreamingDetokenizer:
@@ -90,6 +91,7 @@ class NaiveStreamingDetokenizer(StreamingDetokenizer):
             self._current_text = self._tokenizer.decode(self._current_tokens)
             if (
                 self._tokenizer.clean_up_tokenization_spaces
+                and len(self._current_text) > 0
                 and self._current_text[-1] == " "
             ):
                 self._current_text = self._current_text[:-1]
@@ -266,6 +268,28 @@ class TokenizerWrapper:
             if eos_token_ids is not None
             else {tokenizer.eos_token_id}
         )
+        self._think_start = None
+        self._think_end = None
+        self._tool_call_start = None
+        self._tool_call_end = None
+
+        THINK_TOKENS = [("<think>", "</think>")]
+        TOOL_CALL_TOKENS = [("<tool_call>", "</tool_call>")]
+
+        vocab = tokenizer.get_vocab()
+        for think_start, think_end in THINK_TOKENS:
+            if think_start in vocab and think_end in vocab:
+                self._think_start = think_start
+                self._think_end = think_end
+                break
+        if tokenizer.chat_template and '"tool"' in tokenizer.chat_template:
+            self._tool_call_start = ""
+            self._tool_call_end = ""
+            for tool_call_start, tool_call_end in TOOL_CALL_TOKENS:
+                if tool_call_start in vocab and tool_call_end in vocab:
+                    self._tool_call_start = tool_call_start
+                    self._tool_call_end = tool_call_end
+                    break
 
     def add_eos_token(self, token: str):
         token_id = None
@@ -278,6 +302,30 @@ class TokenizerWrapper:
             raise ValueError(f"'{token}' is not a token for this tokenizer")
 
         self._eos_token_ids.add(token_id)
+
+    @property
+    def has_thinking(self):
+        return self._think_start is not None
+
+    @property
+    def think_start(self):
+        return self._think_start
+
+    @property
+    def think_end(self):
+        return self._think_end
+
+    @property
+    def has_tool_calling(self):
+        return self._tool_call_start is not None
+
+    @property
+    def tool_call_start(self):
+        return self._tool_call_start
+
+    @property
+    def tool_call_end(self):
+        return self._tool_call_end
 
     def __getattr__(self, attr):
         if attr == "detokenizer":
@@ -299,6 +347,35 @@ class TokenizerWrapper:
             super().__setattr__(attr, value)
         else:
             setattr(self._tokenizer, attr, value)
+
+
+class NewlineTokenizer(PreTrainedTokenizerFast):
+    """A tokenizer that replaces newlines with <n> and <n> with new line."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def _preprocess_text(self, text):
+        return text.replace("\n", "<n>")
+
+    def _postprocess_text(self, text):
+        return text.replace("<n>", "\n")
+
+    def encode(self, text, **kwargs):
+        return super().encode(self._preprocess_text(text), **kwargs)
+
+    def encode_batch(self, texts, **kwargs):
+        return super().encode_batch([self._preprocess_text(t) for t in texts], **kwargs)
+
+    def decode(self, *args, **kwargs):
+        return self._postprocess_text(super().decode(*args, **kwargs))
+
+    def batch_decode(self, *args, **kwargs):
+        decoded = super().batch_decode(*args, **kwargs)
+        return [self._postprocess_text(d) for d in decoded]
+
+
+AutoTokenizer.register("NewlineTokenizer", fast_tokenizer_class=NewlineTokenizer)
 
 
 def _match(a, b):
@@ -341,7 +418,9 @@ def _is_bpe_decoder(decoder):
     return isinstance(decoder, dict) and decoder.get("type", None) == "ByteLevel"
 
 
-def load_tokenizer(model_path, tokenizer_config_extra={}, eos_token_ids=None):
+def load_tokenizer(
+    model_path, tokenizer_config_extra={}, return_tokenizer=True, eos_token_ids=None
+):
     """Load a huggingface tokenizer and try to infer the type of streaming
     detokenizer to use.
 
@@ -353,7 +432,11 @@ def load_tokenizer(model_path, tokenizer_config_extra={}, eos_token_ids=None):
     tokenizer_file = model_path / "tokenizer.json"
     if tokenizer_file.exists():
         with open(tokenizer_file, "r", encoding="utf-8") as fid:
-            tokenizer_content = json.load(fid)
+            try:
+                tokenizer_content = json.load(fid)
+            except JSONDecodeError as e:
+                raise JSONDecodeError("Failed to parse tokenizer.json", e.doc, e.pos)
+
         if "decoder" in tokenizer_content:
             if _is_spm_decoder(tokenizer_content["decoder"]):
                 detokenizer_class = SPMStreamingDetokenizer
@@ -364,11 +447,15 @@ def load_tokenizer(model_path, tokenizer_config_extra={}, eos_token_ids=None):
 
     if isinstance(eos_token_ids, int):
         eos_token_ids = [eos_token_ids]
-    return TokenizerWrapper(
-        AutoTokenizer.from_pretrained(model_path, **tokenizer_config_extra),
-        detokenizer_class,
-        eos_token_ids=eos_token_ids,
-    )
+
+    if return_tokenizer:
+        return TokenizerWrapper(
+            AutoTokenizer.from_pretrained(model_path, **tokenizer_config_extra),
+            detokenizer_class,
+            eos_token_ids=eos_token_ids,
+        )
+    else:
+        return detokenizer_class
 
 
 def no_bos_or_eos(sequence: List, bos: int, eos: int) -> List:

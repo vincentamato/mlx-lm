@@ -12,7 +12,7 @@ def make_prompt_cache(
     max_kv_size: Optional[int] = None,
 ) -> List[Any]:
     """
-    Construct the model's cache for use when cgeneration.
+    Construct the model's cache for use in generation.
 
     This function will defer the cache construction to the model if it has a
     ``make_cache`` method, otherwise it will make a default KV cache.
@@ -127,6 +127,40 @@ class _BaseCache:
 
     def is_trimmable(self):
         return False
+
+
+class ConcatenateKVCache(_BaseCache):
+    """ConcatenateKVCache the simplest KV cache implementation.
+
+    Can be used as a mock KV cache or when large blocks are being processed at
+    a time in which case KVCache isn't necessarily faster. Consider using the
+    KVCache with a larger step size before using this cache.
+    """
+
+    def __init__(self):
+        self.keys = None
+        self.values = None
+        self.offset = 0
+
+    def update_and_fetch(self, keys, values):
+        if self.keys is None:
+            self.keys = keys
+            self.values = values
+        else:
+            self.keys = mx.concatenate([self.keys, keys], axis=-2)
+            self.values = mx.concatenate([self.values, values], axis=-2)
+        self.offset = self.keys.shape[-2]
+
+        return self.keys, self.values
+
+    @property
+    def state(self):
+        return self.keys, self.values
+
+    @state.setter
+    def state(self, v):
+        self.keys, self.values = v
+        self.offset = self.keys.shape[-2]
 
 
 class QuantizedKVCache(_BaseCache):
@@ -436,3 +470,76 @@ class MambaCache(_BaseCache):
     @state.setter
     def state(self, v):
         self.cache = v
+
+
+class ChunkedKVCache(KVCache):
+    def __init__(self, chunk_size=None):
+        super().__init__()
+        self.chunk_size = chunk_size
+        self.start_position = 0
+
+    def maybe_trim_front(self):
+        # Maintain the cache below the chunk size
+        if self.keys is not None and self.keys.shape[2] >= self.chunk_size:
+            self.start_position += self.keys.shape[2] - self.chunk_size
+            self.keys = self.keys[..., -self.chunk_size :, :]
+            self.values = self.values[..., -self.chunk_size :, :]
+
+    def update_and_fetch(self, keys, values):
+        prev = self.offset - self.start_position
+        if self.keys is None or (prev + keys.shape[2]) > self.keys.shape[2]:
+            B, n_kv_heads, _, k_head_dim = keys.shape
+            v_head_dim = values.shape[3]
+            n_steps = (self.step + keys.shape[2] - 1) // self.step
+            k_shape = (B, n_kv_heads, n_steps * self.step, k_head_dim)
+            v_shape = (B, n_kv_heads, n_steps * self.step, v_head_dim)
+            new_k = mx.zeros(k_shape, keys.dtype)
+            new_v = mx.zeros(v_shape, values.dtype)
+            if self.keys is not None:
+                if prev % self.step != 0:
+                    self.keys = self.keys[..., :prev, :]
+                    self.values = self.values[..., :prev, :]
+                self.keys = mx.concatenate([self.keys, new_k], axis=2)
+                self.values = mx.concatenate([self.values, new_v], axis=2)
+            else:
+                self.keys, self.values = new_k, new_v
+
+        self.offset += keys.shape[2]
+        end = self.offset - self.start_position
+        self.keys[..., prev:end, :] = keys
+        self.values[..., prev:end, :] = values
+        return self.keys[..., :end, :], self.values[..., :end, :]
+
+    def trim(self, n):
+        n = min(self.offset - self.start_position, n)
+        self.offset -= n
+        return n
+
+    @property
+    def meta_state(self):
+        return tuple(map(str, (self.chunk_size, self.start_position)))
+
+    @meta_state.setter
+    def meta_state(self, v):
+        self.chunk_size, self.start_position = map(int, v)
+
+
+class CacheList(KVCache):
+    def __init__(self, *caches):
+        self.caches = caches
+
+    def __getitem__(self, idx):
+        return self.caches[idx]
+
+    @property
+    def state(self):
+        return [s for c in self.caches for s in c.state]
+
+    @state.setter
+    def state(self, v):
+        state_lens = [len(c.state) for c in self.caches]
+        start = 0
+        for c in self.caches:
+            l = len(c.state)
+            c.state = v[start : start + l]
+            start += l

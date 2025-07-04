@@ -67,7 +67,7 @@ class TestLora(unittest.TestCase):
             )
             self.assertEqual(trainable_params, expected_trainable_parameters)
 
-        params = {"rank": 8, "alpha": 16, "dropout": 0.0, "scale": 10.0}
+        params = {"rank": 8, "dropout": 0.0, "scale": 10.0}
         check_config(params)
 
         params["rank"] = 1
@@ -108,7 +108,7 @@ class TestLora(unittest.TestCase):
         )
 
         num_lora_layers = 4
-        params = {"rank": 8, "alpha": 16, "dropout": 0.0, "scale": 10.0}
+        params = {"rank": 8, "dropout": 0.0, "scale": 10.0}
 
         model = gpt_neox.Model(args)
         model.freeze()
@@ -365,7 +365,6 @@ class TestScheduleConfig(unittest.TestCase):
     def test_evaluate_calls(self):
         mock_model = MagicMock()
         mock_dataset = MagicMock()
-        mock_tokenizer = MagicMock()
         mock_default_loss = MagicMock()
         mock_iterate_batches = MagicMock()
 
@@ -388,7 +387,6 @@ class TestScheduleConfig(unittest.TestCase):
             evaluate(
                 model=mock_model,
                 dataset=mock_dataset,
-                tokenizer=mock_tokenizer,
                 batch_size=2,
                 num_batches=2,
                 max_seq_length=2048,
@@ -398,7 +396,6 @@ class TestScheduleConfig(unittest.TestCase):
 
         mock_iterate_batches.assert_called_once_with(
             dataset=mock_dataset,
-            tokenizer=mock_tokenizer,
             batch_size=2,
             max_seq_length=2048,
         )
@@ -407,7 +404,6 @@ class TestScheduleConfig(unittest.TestCase):
     def test_evaluate_infinite_batches(self):
         mock_model = MagicMock()
         mock_dataset = MagicMock()
-        mock_tokenizer = MagicMock()
         mock_default_loss = MagicMock()
         mock_iterate_batches = MagicMock()
 
@@ -427,7 +423,6 @@ class TestScheduleConfig(unittest.TestCase):
             evaluate(
                 model=mock_model,
                 dataset=mock_dataset,
-                tokenizer=mock_tokenizer,
                 batch_size=2,
                 num_batches=-1,
                 max_seq_length=2048,
@@ -437,7 +432,6 @@ class TestScheduleConfig(unittest.TestCase):
 
         mock_iterate_batches.assert_called_once_with(
             dataset=mock_dataset,
-            tokenizer=mock_tokenizer,
             batch_size=2,
             max_seq_length=2048,
         )

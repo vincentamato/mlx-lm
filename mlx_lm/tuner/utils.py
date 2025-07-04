@@ -54,6 +54,13 @@ def linear_to_lora_layers(
     """
 
     def to_lora(layer):
+        if not use_dora and hasattr(layer, "to_lora"):
+            return layer.to_lora(
+                r=config["rank"],
+                scale=config["scale"],
+                dropout=config["dropout"],
+            )
+
         if isinstance(layer, (nn.Linear, nn.QuantizedLinear)):
             LoRALayer = DoRALinear if use_dora else LoRALinear
         elif isinstance(layer, (SwitchLinear, QuantizedSwitchLinear)):
@@ -79,6 +86,7 @@ def linear_to_lora_layers(
         keys = set(keys)
     elif model.model_type in [
         "mistral",
+        "mistral3",
         "llama",
         "phi",
         "mixtral",
@@ -87,6 +95,8 @@ def linear_to_lora_layers(
         "hunyuan",
         "qwen2",
         "qwen2_moe",
+        "qwen3",
+        "qwen3_moe",
         "phimoe",
         "gemma",
         "gemma2",
@@ -99,10 +109,15 @@ def linear_to_lora_layers(
         "cohere2",
         "minicpm",
         "minicpm3",
+        "minicpm4",
         "deepseek",
         "olmo2",
         "olmoe",
         "internlm3",
+        "glm4",
+        "mimo",
+        "ernie4_5",
+        "dots1",
     ]:
         keys = set(["self_attn.q_proj", "self_attn.v_proj"])
         if model.model_type in ["mixtral", "phimoe"]:
@@ -110,7 +125,7 @@ def linear_to_lora_layers(
         if model.model_type == "qwen2_moe":
             keys.add("mlp.gate")
             keys.add("mlp.shared_expert_gate")
-        if model.model_type == "olmoe":
+        if model.model_type in ["olmoe", "qwen3_moe", "dots1"]:
             keys.add("mlp.gate")
 
     elif model.model_type == "gpt_bigcode":
@@ -210,39 +225,36 @@ def dequantize(model: nn.Module) -> nn.Module:
     Returns:
         nn.Module: The model with dequantized layers.
     """
-    de_quantize_layers = []
+    dequantize_layers = []
     for name, module in model.named_modules():
+        bias = "bias" in module
         if isinstance(module, nn.QuantizedLinear):
-            bias = "bias" in module
-            weight = module.weight
-            weight = mx.dequantize(
-                weight,
-                module.scales,
-                module.biases,
-                module.group_size,
-                module.bits,
-            ).astype(mx.float16)
-            output_dims, input_dims = weight.shape
-            linear = nn.Linear(input_dims, output_dims, bias=bias)
-            linear.weight = weight
-            if bias:
-                linear.bias = module.bias
-            de_quantize_layers.append((name, linear))
-        if isinstance(module, nn.QuantizedEmbedding):
-            weight = mx.dequantize(
-                module.weight,
-                module.scales,
-                module.biases,
-                module.group_size,
-                module.bits,
-            ).astype(mx.float16)
-            num_embeddings, dims = weight.shape
-            emb = nn.Embedding(num_embeddings, dims)
-            emb.weight = weight
-            de_quantize_layers.append((name, emb))
+            cls = nn.Linear
+            kwargs = {"bias": bias}
+        elif isinstance(module, nn.QuantizedEmbedding):
+            kwargs = {}
+            cls = nn.Embedding
+        elif isinstance(module, QuantizedSwitchLinear):
+            kwargs = {"bias": bias}
+            cls = SwitchLinear
+        else:
+            continue
+        weight = mx.dequantize(
+            module.weight,
+            module.scales,
+            module.biases,
+            module.group_size,
+            module.bits,
+        )
+        args = weight.shape[::-1]
+        m = cls(*args, **kwargs)
+        if bias:
+            m.bias = module.bias
+        m.weight = weight
+        dequantize_layers.append((name, m))
 
-    if len(de_quantize_layers) > 0:
-        model.update_modules(tree_unflatten(de_quantize_layers))
+    if len(dequantize_layers) > 0:
+        model.update_modules(tree_unflatten(dequantize_layers))
     return model
 
 
@@ -265,20 +277,24 @@ def remove_lora_layers(model: nn.Module) -> nn.Module:
     return model
 
 
-def nparams(module):
-    if hasattr(module, "bits"):
-        n = 0 if not hasattr(module, "bias") else module.bias.size
-        return n + module.weight.size * 32 // module.bits
-    return sum(v.size for _, v in tree_flatten(module.parameters()))
-
-
-def print_trainable_parameters(model):
+def get_total_parameters(model):
     leaf_modules = tree_flatten(
         model.leaf_modules(), is_leaf=lambda m: isinstance(m, nn.Module)
     )
-    total_p = sum(nparams(m) for _, m in leaf_modules) / 10**6
+
+    def nparams(m):
+        if hasattr(m, "bits"):
+            n = 0 if not hasattr(m, "bias") else m.bias.size
+            return n + m.weight.size * 32 // m.bits
+        return sum(v.size for _, v in tree_flatten(m.parameters()))
+
+    return sum(nparams(m) for _, m in leaf_modules)
+
+
+def print_trainable_parameters(model):
+    total_p = get_total_parameters(model) / 1e6
     trainable_p = (
-        sum(v.size for _, v in tree_flatten(model.trainable_parameters())) / 10**6
+        sum(v.size for _, v in tree_flatten(model.trainable_parameters())) / 1e6
     )
     print(
         f"Trainable parameters: {(trainable_p * 100 / total_p):.3f}% "
