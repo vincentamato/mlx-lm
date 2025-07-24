@@ -84,10 +84,11 @@ def linear_to_lora_layers(
     keys = config.get("keys", None)
     if keys is not None:
         keys = set(keys)
-    elif model.model_type in [
+    elif model.model_type in {
         "mistral",
         "mistral3",
         "llama",
+        "lfm2",
         "phi",
         "mixtral",
         "nemotron",
@@ -118,8 +119,10 @@ def linear_to_lora_layers(
         "mimo",
         "ernie4_5",
         "dots1",
-    ]:
-        keys = set(["self_attn.q_proj", "self_attn.v_proj"])
+        "smollm3",
+        "exaone4",
+    }:
+        keys = {"self_attn.q_proj", "self_attn.v_proj"}
         if model.model_type in ["mixtral", "phimoe"]:
             keys.add("block_sparse_moe.gate")
         if model.model_type == "qwen2_moe":
@@ -129,33 +132,31 @@ def linear_to_lora_layers(
             keys.add("mlp.gate")
 
     elif model.model_type == "gpt_bigcode":
-        keys = set(["attn.c_attn"])
+        keys = {"attn.c_attn"}
     elif model.model_type == "gpt2":
-        keys = set(["attn.c_attn"])
+        keys = {"attn.c_attn"}
     elif model.model_type == "gpt_neox":
-        keys = set(["attention.query_key_value"])
+        keys = {"attention.query_key_value"}
     elif model.model_type == "olmo":
-        keys = set(["att_proj"])
+        keys = {"att_proj"}
     elif model.model_type == "openelm":
-        keys = set(["attn.qkv_proj"])
+        keys = {"attn.qkv_proj"}
     elif model.model_type == "phi3":
-        keys = set(["self_attn.qkv_proj"])
+        keys = {"self_attn.qkv_proj"}
     elif model.model_type == "phi-msft":
-        keys = set(["mixer.Wqkv", "moe.gate"])
+        keys = {"mixer.Wqkv", "moe.gate"}
     elif model.model_type == "dbrx":
-        keys = set(["norm_attn_norm.attn.Wqkv", "ffn.router.layer"])
+        keys = {"norm_attn_norm.attn.Wqkv", "ffn.router.layer"}
     elif model.model_type == "internlm2":
-        keys = set(["attention.wqkv", "attention.wo"])
-    elif model.model_type == "deepseek_v2" or model.model_type == "minicpm3":
-        keys = set(
-            [
-                "self_attn.q_proj",
-                "self_attn.q_a_proj",
-                "self_attn.q_b_proj",
-                "self_attn.kv_a_proj_with_mqa",
-                "self_attn.kv_b_proj",
-            ]
-        )
+        keys = {"attention.wqkv", "attention.wo"}
+    elif model.model_type in {"deepseek_v2", "deepseek_v3", "minicpm3"}:
+        keys = {
+            "self_attn.q_proj",
+            "self_attn.q_a_proj",
+            "self_attn.q_b_proj",
+            "self_attn.kv_a_proj_with_mqa",
+            "self_attn.kv_b_proj",
+        }
     elif model.model_type == "mamba":
         keys = set(
             [
@@ -173,7 +174,7 @@ def linear_to_lora_layers(
             ]
         )
     elif model.model_type == "exaone":
-        keys = set(["attn.attention.q_proj", "attn.attention.v_proj"])
+        keys = {"attn.attention.q_proj", "attn.attention.v_proj"}
     else:
         raise ValueError(f"Lora does not support {model.model_type}")
 
