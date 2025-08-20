@@ -44,8 +44,16 @@ class Model(nn.Module):
     
     def sanitize(self, weights):
         weights = tree_unflatten(list(weights.items()))
+        weights.pop("visual", None)
         weights.pop("vision_tower", None)
-        return dict(tree_flatten(weights))
+        weights = dict(tree_flatten(weights))
+        
+        sanitized = {}
+        for key, value in weights.items():
+            if not key.startswith("language_model."):
+                key = "language_model." + key
+            sanitized[key] = value
+        return sanitized
     
     @property
     def layers(self):
