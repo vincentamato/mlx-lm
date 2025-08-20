@@ -192,90 +192,76 @@ class YarnRoPE(nn.Module):
             freqs=self._freqs,
         )
 
-class MRoPE(nn.Module):   
+class MRoPE(nn.Module):
     def __init__(
         self,
         dims: int,
         mrope_section: List[int],
-        traditional: bool = False,
         base: float = 10000,
-        scale: float = 1.0,
         max_position_embeddings: int = 2048,
     ):
         super().__init__()
         self.dims = dims
-        self.traditional = traditional
-        self.base = base
-        self.scale = scale
         self.mrope_section = mrope_section
-        
+        self.base = base
+        self.max_position_embeddings = max_position_embeddings
         self._split_indices = mx.cumsum(mx.array(mrope_section) * 2)[:-1].tolist()
-        
         self._inv_freq = 1.0 / (base ** (mx.arange(0, dims, 2, dtype=mx.float32) / dims))
-        
-        self.max_seq_len_cached = 0
         self._cos_cached = None
         self._sin_cached = None
-        self._update_cos_sin_cache(max_position_embeddings)
+        self._set_cos_sin_cache(seq_len=max_position_embeddings)
     
-    def _update_cos_sin_cache(self, seq_len: int, device=None):
-        if seq_len <= self.max_seq_len_cached:
-            return
-        
+    def _set_cos_sin_cache(self, seq_len: int):
         self.max_seq_len_cached = seq_len
-        
-        positions = mx.arange(seq_len, dtype=mx.float32)
-        freqs = mx.outer(positions, self._inv_freq)
-        
-        emb = mx.concatenate([freqs, freqs], axis=-1)
-        
+        t = mx.arange(self.max_seq_len_cached).astype(mx.float32)
+        freqs = mx.outer(t, self._inv_freq)
+        emb = mx.concatenate((freqs, freqs), axis=-1)
         self._cos_cached = mx.cos(emb)
         self._sin_cached = mx.sin(emb)
     
-    def _rotate_half(self, x: mx.array) -> mx.array:
-        half_dim = x.shape[-1] // 2
-        x1, x2 = x[..., :half_dim], x[..., half_dim:]
+    def _rotate_half(self, x: mx.array):
+        x1 = x[..., : x.shape[-1] // 2]
+        x2 = x[..., x.shape[-1] // 2 :]
         return mx.concatenate([-x2, x1], axis=-1)
     
-    def _apply_mrope_sections(self, cos: mx.array, sin: mx.array) -> tuple[mx.array, mx.array]:
+    def _apply_mrope_sections(self, cos: mx.array, sin: mx.array):
         cos_sections = mx.split(cos, self._split_indices, axis=-1)
         sin_sections = mx.split(sin, self._split_indices, axis=-1)
-        
-        cos_reordered = mx.concatenate([sec[i % 3] for i, sec in enumerate(cos_sections)], axis=-1)
-        sin_reordered = mx.concatenate([sec[i % 3] for i, sec in enumerate(sin_sections)], axis=-1)
-        
-        cos_reordered = cos_reordered[:, None, :, :]
-        sin_reordered = sin_reordered[:, None, :, :]
-        
+
+        cos_reordered = mx.concatenate(
+            [cos_sections[i % 3] for i in range(len(cos_sections))], 
+            axis=-1
+        )[None, None, :, :]
+        sin_reordered = mx.concatenate(
+            [sin_sections[i % 3] for i in range(len(sin_sections))], 
+            axis=-1
+        )[None, None, :, :]
+
         return cos_reordered, sin_reordered
     
-    def __call__(self, x: mx.array, offset: int = 0) -> mx.array:
-        original_shape = x.shape
+    def __call__(
+        self, 
+        x: mx.array,  
+        offset: int = 0,
+        position_ids: Optional[mx.array] = None,
+    ):
+        B, _, L, _ = x.shape
         
-        if len(original_shape) == 3:
-            B, L, D = original_shape
-            x = x.reshape(B, 1, L, D)
+        if position_ids is None:
+            position_ids = mx.arange(offset, offset + L)
         
-        B, H, L, D = x.shape
-        
-        if offset + L > self.max_seq_len_cached:
-            self._update_cos_sin_cache(offset + L * 2)
-
-        position_ids = mx.arange(offset, offset + L, dtype=mx.int32)
-        position_ids = mx.broadcast_to(position_ids[None, None, :], (3, B, L))
-        
+        seq_len = position_ids.max().item() + 1
+        if seq_len > self.max_seq_len_cached:
+            self._set_cos_sin_cache(seq_len=seq_len)
+            
         cos = self._cos_cached[position_ids]
         sin = self._sin_cached[position_ids]
-        
+    
         cos, sin = self._apply_mrope_sections(cos, sin)
         
-        x_rotated = x * cos + self._rotate_half(x) * sin
+        x = (x * cos) + (self._rotate_half(x) * sin)
         
-        if len(original_shape) == 3:
-            x_rotated = x_rotated.reshape(original_shape)
-        
-        return x_rotated
-
+        return x
 
 def initialize_rope(
     dims,
@@ -338,7 +324,6 @@ def initialize_rope(
     elif rope_type == "mrope":
         return MRoPE(
             dims=dims,
-            traditional=traditional,
             base=base,
             max_position_embeddings=max_position_embeddings,
             mrope_section=scaling_config["mrope_section"],
