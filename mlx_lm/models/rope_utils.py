@@ -249,7 +249,9 @@ class MRoPE(nn.Module):
         B, _, L, _ = x.shape
 
         if position_ids is None:
-            position_ids = mx.arange(offset, offset + L)
+            position_ids = mx.arange(offset, offset + L, dtype=mx.int32)
+        else:
+            position_ids = position_ids.astype(mx.int32)
 
         seq_len = position_ids.max().item() + 1
         if seq_len > self.max_seq_len_cached:
@@ -260,7 +262,7 @@ class MRoPE(nn.Module):
 
         cos, sin = self._apply_mrope_sections(cos, sin)
 
-        x = (x * cos) + (self._rotate_half(x) * sin)
+        x = (x * cos.astype(x.dtype)) + (self._rotate_half(x) * sin.astype(x.dtype))
 
         return x
 
