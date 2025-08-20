@@ -202,10 +202,6 @@ class MRoPE(nn.Module):
         max_position_embeddings: int = 2048,
     ):
         super().__init__()
-        self.dims = dims
-        self.mrope_section = mrope_section
-        self.base = base
-        self.max_position_embeddings = max_position_embeddings
         self._split_indices = mx.cumsum(mx.array(mrope_section) * 2)[:-1].tolist()
         self._inv_freq = 1.0 / (
             base ** (mx.arange(0, dims, 2, dtype=mx.float32) / dims)
