@@ -297,7 +297,23 @@ class APIHandler(BaseHTTPRequestHandler):
         # Fetch and parse request body
         content_length = int(self.headers["Content-Length"])
         raw_body = self.rfile.read(content_length)
-        self.body = json.loads(raw_body.decode())
+        try:
+            self.body = json.loads(raw_body.decode())
+        except json.JSONDecodeError as e:
+            logging.error(f"JSONDecodeError: {e} - Raw body: {raw_body.decode()}")
+            # Set appropriate headers based on streaming requirement
+            if self.stream:
+                self._set_stream_headers(400)
+                self.wfile.write(
+                    f"data: {json.dumps({'error': f'Invalid JSON in request body: {e}'})}\n\n".encode()
+                )
+            else:
+                self._set_completion_headers(400)
+                self.wfile.write(
+                    json.dumps({"error": f"Invalid JSON in request body: {e}"}).encode()
+                )
+            return
+
         indent = "\t"  # Backslashes can't be inside of f-strings
         logging.debug(f"Incoming Request Body: {json.dumps(self.body, indent=indent)}")
         assert isinstance(
@@ -487,15 +503,17 @@ class APIHandler(BaseHTTPRequestHandler):
             "choices": [
                 {
                     "index": 0,
-                    "logprobs": {
-                        "token_logprobs": token_logprobs,
-                        "top_logprobs": top_logprobs,
-                        "tokens": tokens,
-                    },
                     "finish_reason": finish_reason,
                 },
             ],
         }
+
+        if token_logprobs or top_logprobs or tokens:
+            response["choices"][0]["logprobs"] = {
+                "token_logprobs": token_logprobs,
+                "top_logprobs": top_logprobs,
+                "tokens": tokens,
+            }
 
         if not self.stream:
             if not (
@@ -525,7 +543,7 @@ class APIHandler(BaseHTTPRequestHandler):
         elif self.object_type == "text_completion":
             choice.update(text=text)
         else:
-            ValueError(f"Unsupported response type: {self.object_type}")
+            raise ValueError(f"Unsupported response type: {self.object_type}")
 
         return response
 
@@ -662,6 +680,23 @@ class APIHandler(BaseHTTPRequestHandler):
         tool_text = ""
         in_tool_call = False
         segment = ""
+
+        # Create keepalive callback to send SSE comments during long prompt processing
+        def keepalive_callback(processed_tokens, total_tokens):
+            logging.info(
+                f"Prompt processing progress: {processed_tokens}/{total_tokens}"
+            )
+            if self.stream:
+                try:
+                    # Send SSE comment for keepalive - invisible to clients but keeps connection alive
+                    self.wfile.write(
+                        f": keepalive {processed_tokens}/{total_tokens}\n\n".encode()
+                    )
+                    self.wfile.flush()
+                except (BrokenPipeError, ConnectionResetError, OSError):
+                    # Client disconnected, ignore
+                    pass
+
         for gen_response in stream_generate(
             model=self.model,
             tokenizer=self.tokenizer,
@@ -672,6 +707,7 @@ class APIHandler(BaseHTTPRequestHandler):
             prompt_cache=self.prompt_cache.cache,
             draft_model=self.model_provider.draft_model,
             num_draft_tokens=self.num_draft_tokens,
+            prompt_progress_callback=keepalive_callback,
         ):
             logging.debug(gen_response.text)
 
@@ -751,7 +787,12 @@ class APIHandler(BaseHTTPRequestHandler):
             self.wfile.write(f"data: {json.dumps(response)}\n\n".encode())
             self.wfile.flush()
             if self.stream_options is not None and self.stream_options["include_usage"]:
-                response = self.completion_usage_response(len(prompt), len(tokens))
+                original_prompt_length = (
+                    len(self.prompt_cache.tokens) - len(tokens) + len(prompt)
+                )
+                response = self.completion_usage_response(
+                    original_prompt_length, len(tokens)
+                )
                 self.wfile.write(f"data: {json.dumps(response)}\n\n".encode())
                 self.wfile.flush()
             self.wfile.write("data: [DONE]\n\n".encode())
