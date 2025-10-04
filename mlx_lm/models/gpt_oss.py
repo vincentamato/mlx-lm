@@ -226,8 +226,13 @@ class Model(nn.Module):
         self.model = GptOssMoeModel(args)
         self.lm_head = nn.Linear(args.hidden_size, args.vocab_size, bias=False)
 
-    def __call__(self, inputs: mx.array, cache=None):
-        return self.lm_head(self.model(inputs, cache))
+    def __call__(
+        self,
+        inputs: mx.array,
+        cache=None,
+        input_embeddings: Optional[mx.array] = None,
+    ):
+        return self.lm_head(self.model(inputs, cache, input_embeddings))
 
     def sanitize(self, weights):
         if any("gate_proj.weight" in k for k in weights.keys()):

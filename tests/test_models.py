@@ -1267,6 +1267,95 @@ class TestModels(unittest.TestCase):
             model, args.model_type, args.vocab_size, args.num_hidden_layers
         )
 
+    def test_internvl3_5(self):
+        from mlx_lm.models import internvl3_5
+
+        args_qwen3 = internvl3_5.ModelArgs(
+            model_type="internvl3_5",
+            text_config={
+                "model_type": "qwen3",
+                "hidden_size": 1024,
+                "num_hidden_layers": 4,
+                "intermediate_size": 2048,
+                "num_attention_heads": 4,
+                "num_key_value_heads": 4,
+                "rms_norm_eps": 1e-5,
+                "vocab_size": 10_000,
+                "head_dim": 128,
+                "max_position_embeddings": 4096,
+                "tie_word_embeddings": False,
+                "rope_theta": 1000,
+            },
+        )
+        model = internvl3_5.Model(args_qwen3)
+        self.model_test_runner(
+            model,
+            args_qwen3.model_type,
+            args_qwen3.text_config["vocab_size"],
+            args_qwen3.text_config["num_hidden_layers"],
+        )
+
+        args_qwen3_moe = internvl3_5.ModelArgs(
+            model_type="internvl3_5",
+            text_config={
+                "model_type": "qwen3_moe",
+                "hidden_size": 1024,
+                "num_hidden_layers": 4,
+                "intermediate_size": 2048,
+                "num_attention_heads": 4,
+                "num_key_value_heads": 4,
+                "rms_norm_eps": 1e-5,
+                "vocab_size": 10_000,
+                "head_dim": 128,
+                "max_position_embeddings": 4096,
+                "tie_word_embeddings": False,
+                "rope_theta": 1000,
+                "decoder_sparse_step": 1,
+                "mlp_only_layers": [],
+                "num_experts_per_tok": 4,
+                "num_experts": 16,
+                "moe_intermediate_size": 1024,
+                "norm_topk_prob": True,
+            },
+        )
+        model = internvl3_5.Model(args_qwen3_moe)
+        self.model_test_runner(
+            model,
+            args_qwen3_moe.model_type,
+            args_qwen3_moe.text_config["vocab_size"],
+            args_qwen3_moe.text_config["num_hidden_layers"],
+        )
+
+        args_gpt_oss = internvl3_5.ModelArgs(
+            model_type="internvl3_5",
+            text_config={
+                "model_type": "gpt_oss",
+                "hidden_size": 1024,
+                "num_hidden_layers": 4,
+                "intermediate_size": 2048,
+                "num_attention_heads": 8,
+                "num_key_value_heads": 2,
+                "num_local_experts": 16,
+                "num_experts_per_tok": 2,
+                "sliding_window": 128,
+                "rope_theta": 10000,
+                "vocab_size": 10_000,
+                "layer_types": [
+                    "sliding_attention",
+                    "full_attention",
+                    "sliding_attention",
+                    "full_attention",
+                ],
+            },
+        )
+        model = internvl3_5.Model(args_gpt_oss)
+        self.model_test_runner(
+            model,
+            args_gpt_oss.model_type,
+            args_gpt_oss.text_config["vocab_size"],
+            args_gpt_oss.text_config["num_hidden_layers"],
+        )
+
     def test_all_models(self):
         test_configs = [
             {
@@ -1524,6 +1613,74 @@ class TestModels(unittest.TestCase):
                 "model_type": "helium",
                 "rope_theta": 1000,
                 "tie_word_embeddings": False,
+            },
+            {
+                "model_type": "internvl3_5",
+                "num_hidden_layers": 4,
+                "vocab_size": 1000,
+                "text_config": {
+                    "model_type": "qwen3",
+                    "hidden_size": 128,
+                    "num_hidden_layers": 4,
+                    "intermediate_size": 256,
+                    "num_attention_heads": 4,
+                    "num_key_value_heads": 2,
+                    "rms_norm_eps": 1e-5,
+                    "vocab_size": 1000,
+                    "head_dim": 32,
+                    "max_position_embeddings": 1000,
+                    "tie_word_embeddings": False,
+                    "rope_theta": 1000,
+                },
+            },
+            {
+                "model_type": "internvl3_5",
+                "num_hidden_layers": 4,
+                "vocab_size": 1000,
+                "text_config": {
+                    "model_type": "qwen3_moe",
+                    "hidden_size": 128,
+                    "num_hidden_layers": 4,
+                    "intermediate_size": 256,
+                    "num_attention_heads": 4,
+                    "num_key_value_heads": 2,
+                    "rms_norm_eps": 1e-5,
+                    "vocab_size": 1000,
+                    "head_dim": 32,
+                    "max_position_embeddings": 1000,
+                    "tie_word_embeddings": False,
+                    "rope_theta": 1000,
+                    "decoder_sparse_step": 1,
+                    "mlp_only_layers": [],
+                    "num_experts_per_tok": 4,
+                    "num_experts": 16,
+                    "moe_intermediate_size": 128,
+                    "norm_topk_prob": True,
+                },
+            },
+            {
+                "model_type": "internvl3_5",
+                "num_hidden_layers": 4,
+                "vocab_size": 1000,
+                "text_config": {
+                    "model_type": "gpt_oss",
+                    "hidden_size": 128,
+                    "num_hidden_layers": 4,
+                    "intermediate_size": 256,
+                    "num_attention_heads": 4,
+                    "num_key_value_heads": 2,
+                    "num_local_experts": 8,
+                    "num_experts_per_tok": 2,
+                    "sliding_window": 64,
+                    "rope_theta": 1000,
+                    "vocab_size": 1000,
+                    "layer_types": [
+                        "sliding_attention",
+                        "full_attention",
+                        "sliding_attention",
+                        "full_attention",
+                    ],
+                },
             },
             {
                 "text_config": {
